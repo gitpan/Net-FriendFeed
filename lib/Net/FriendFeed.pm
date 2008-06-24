@@ -9,7 +9,7 @@ Net::FriendFeed - Perl interface to FriendFeed.com API
 
 =cut
 
-our $VERSION = '0.84';
+our $VERSION = '0.85';
 
 use Encode;
 use File::Spec;
@@ -34,7 +34,7 @@ Methods are named in accordance with the official Python package.
 
     use Net::FriendFeed;
 
-    my $frf = Net::FriendFeed->new();
+    my $frf = Net::FriendFeed->new;
     $frf->publish_message('Hello, world!');
     ...
 
@@ -48,6 +48,7 @@ This is a constructor for FriendFeed object. It takes an optional
 hashref parameter with auth credentials.
 
 Example:
+
     my $frf_anon = Net::FriendFeed->new;
     my $frf = Net::FriendFeed->new({login => 'kkapp', remotekey => 'hfytr38'});
 
@@ -155,9 +156,18 @@ sub _post {
 
 =head1 FEED FUNCTIONS
 
-A number of methods fetch different feeds from FriendFeed.
+A number of methods fetch arrays of data or "feeds" from FriendFeed.
+All feeds are available in four different formats. They are
+C<json>, C<xml>, C<atom> and C<rss>. JSON and XML formats are custom
+FriendFeed structures, while Atom and RSS are standard XML formats
+with all FriendFeed specific features represented as custom XML tags.
 
-The feeds have the following structure:
+Net::FriendFeed adds one additional format called C<structure> which
+means the feeds will be fetched as C<json> and then deserialized into
+Perl structures using JSON.pm module. The format C<structure> is set by
+default.
+
+The feeds have the following structure (JSON-like notation is used):
 
     * entries[]
           o id - the FriendFeed entry UUID, used to add comments/likes to the entry
@@ -166,6 +176,7 @@ The feeds have the following structure:
           o published
           o updated
           o hidden - if true, this entry should be hidden based on the user's preferences
+          o anonymous - if true, user will be present but should not be shown 
           o user{} - the user who shared this entry
                 + id - the user's FriendFeed UUID
                 + name - the user's full name
@@ -181,6 +192,9 @@ The feeds have the following structure:
                 + id - the UUID of the comment
                 + user{} - same structure as the user{} structure above
                 + body - the textual body of the comment
+                o via{}? - present if this comment came from an API client
+                    + name - the name of the API client, e.g., "fftogo"
+                    + url - the official URL of the API client, e.g., http://www.fftogo.com
           o likes[]
                 + date
                 + user{} - same structure as the user{} structure above
@@ -206,10 +220,9 @@ The feeds have the following structure:
                 + nickname - the room's FriendFeed nickname, used in FriendFeed URLs
                 + url - the room's URL on FriendFeed
 
-The simple XML format (output=xml) has the same structure as the JSON. The RSS and Atom formats use the standard RSS and Atom attributes for title, link, published, and updated, and include extension elements for all of the other meta-data.
+The simple XML format has the same structure as the JSON. The RSS and Atom formats use the standard RSS and Atom attributes for title, link, published, and updated, and include extension elements for all of the other meta-data.
 
 Dates in JSON and dates in the FriendFeed extension elements in the Atom and RSS feeds are in RFC 3339 format in UTC. You can parse them with the strptime string "%Y-%m-%dT%H:%M:%SZ".
-Filtering & Paging
 
 All feed-fetching methods support additional parameters:
 
@@ -515,19 +528,9 @@ sub publish_message {
     $self->publish_link($msg);
 }
 
-=head2 Upload Images with Entries
-
-The /api/share method can also accept uploaded images encoded as multipart/form-data. This encoding is the standard used for file uploads within web browsers.
-
-If any images are uploaded with the /api/share request, the original and the thumbnail are stored on FriendFeed's servers, and the thumbnail is displayed with the entry.
-
-By default, the thumbnails will link to the destination link for the entry. If you want each uploaded image to link somewhere else, you can specify the link in the IMAGENAME_link argument. For example, if your uploaded image is POST argument file0, you can specify the link for that thumbnail as file0_link.
-
-=cut 
-
 =head1 COMMENT AND LIKE FUNCTIONS
 
-=head2 add_comment($entry, $body)
+=head2 add_comment($entry, $body, $via)
 
 Add a comment on a FriendFeed entry. The arguments are:
 
@@ -541,18 +544,22 @@ required - The FriendFeed UUID of the entry to which this comment is attached.
 
 required - The textual body of the comment.
 
+=item $via
+
+This is an identifier of your software. It's ignored unless you
+register it with FriendFeed administration.
+
 =back
 
-    $frf->add_comment('550e8400-e29b-41d4-a716-446655440000', 'Testing the FriendFeed API');
-)
+    $frf->add_comment('550e8400-e29b-41d4-a716-446655440000', 'Testing the FriendFeed API', 'Microsoft Word');
 
 =cut
 
 sub add_comment {
     my $self = shift;
-    my ($entry, $comment_text) = @_;
+    my ($entry, $comment_text, $via) = @_;
 
-    $self->_post('comment', [entry => $entry, body => Encode::encode('UTF-8', $comment_text)]);
+    $self->_post('comment', [entry => $entry, body => Encode::encode('UTF-8', $comment_text), defined $via ? (via => $via) : ()]);
 }
 
 =head2 edit_comment($entry, $body, $comment)
@@ -654,7 +661,7 @@ required - The FriendFeed UUID of the entry to which this comment is attached
 
 =back
 
-    $frf->add_like("550e8400-e29b-41d4-a716-446655440000")
+    $frf->add_like("550e8400-e29b-41d4-a716-446655440000");
 
 =cut
 
@@ -705,12 +712,16 @@ The returned data has this structure:
           o iconUrl - the URL of the favicon for this service
           o profileUrl? - the user's profile URL on this service, if any
           o username? - the user's username for this service, if any 
-
-    * subscriptions[] - the user's this user is subscribed to
+    * subscriptions[] - the users this user is subscribed to
           o id
           o name
           o nickname
           o profileUrl 
+    * rooms[] - the rooms this user is a member of
+          o id - the room's FriendFeed UUID
+          o name - the room's display name
+          o nickname - the room's FriendFeed nickname, used in FriendFeed URLs
+          o url - the room's URL on FriendFeed
 
 =cut
 
@@ -719,6 +730,23 @@ sub fetch_user_profile {
     my $user = shift;
 
     $self->_fetch_feed("user/$user/profile", @_);
+}
+
+=head2 fetch_user_profiles(\@users)
+
+Returns profiles for multiple users. The returned structure has one
+element C<profiles> which is an array of profile structures described
+alongside C<fetch_user_profile> method. 
+
+User nicknames should be passed as an arrayref.
+
+=cut
+
+sub fetch_user_profiles {
+    my $self = shift;
+    my $users = shift;
+
+    $self->_fetch_feed('profiles', nickname => join(',', @$users), @_);
 }
 
 =head1 AUTHOR
@@ -764,13 +792,13 @@ L<http://search.cpan.org/dist/Net-FriendFeed>
 
 =head1 ACKNOWLEDGEMENTS
 
+Mark Carey prompted to implement C<via> for comments.
 
 =head1 COPYRIGHT & LICENSE
 
 Copyright 2008 Alex Kapranoff, all rights reserved.
 
 This program is released under the following license: GPLv3
-
 
 =cut
 
