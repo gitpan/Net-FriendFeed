@@ -7,7 +7,7 @@ use utf8;   # strings in Russian present
 use Encode;
 use URI::Escape qw/uri_escape_utf8/;
 
-use Test::More qw/no_plan/;
+use Test::More tests => 34;
 use Test::NoWarnings;
 use Test::Deep;
 use Test::MockHTTP;
@@ -19,13 +19,14 @@ our $API_EP = $Net::FriendFeed::API_ENTRYPOINT = 'http://kapranoff.ru/api/';
 
 my $frf = new Net::FriendFeed;
 
-can_ok($frf, qw/publish_message publish_link/);
+can_ok($frf, qw/publish_message publish_link login remotekey validate/);
 
 http_test_setup { $frf->ua($_[0]) };
 
 ok(!$frf->_has_auth, 'no auth present');
 
 ok(!$frf->publish_message('Hello there!'), 'EPERM, need auth');
+is($frf->last_error, 'need-auth');
 
 $frf->login('kappa');
 
@@ -34,6 +35,15 @@ ok(!$frf->publish_message('Hello there!'), 'EPERM, need more auth');
 $frf->remotekey('shlyappa');
 
 ok($frf->_has_auth, 'auth');
+
+ok(
+http_cmp(sub { $frf->validate() },
+    [
+        method => 'GET',
+        uri => methods(as_string => re('validate$')),
+        [qw/header Authorization/] => re('Basic \w+'),
+    ]
+), 'validate');
 
 my $pub_rv;
 
@@ -144,5 +154,7 @@ ok(
     [
         as_string => re('title=Hello\+there!'),
     ], undef,
-    HTTP::Response->new(500, 'Hehe'),
+    HTTP::Response->new(500, 'some error', undef, '{ "errorCode": "error-kap"}'),
 ), 'bad response');
+
+is($frf->last_error, 'error-kap');

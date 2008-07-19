@@ -9,7 +9,7 @@ Net::FriendFeed - Perl interface to FriendFeed.com API
 
 =cut
 
-our $VERSION = '0.85';
+our $VERSION = '0.91';
 
 use Encode;
 use File::Spec;
@@ -19,7 +19,8 @@ use MIME::Base64 qw/encode_base64/;
 use URI::Escape;
 
 use base qw(Class::Accessor);
-Net::FriendFeed->mk_accessors(qw/login remotekey ua return_feeds_as/);
+Net::FriendFeed->mk_accessors(qw/login remotekey ua return_feeds_as
+    last_error/);
 
 our $API_ENTRYPOINT = 'http://friendfeed.com/api/';
 
@@ -58,6 +59,32 @@ L<http://friendfeed.com/remotekey>
 
 Authentication is needed only to post or to read private feeds.
 
+=head2 last_error()
+
+Returns machine-readable code of the last error. You should consult
+this code if an API call returns C<undef>.
+
+This is a list of FriendFeed error codes:
+    * bad-id-format - Bad format for UUID argument.
+    * bad-url-format - Bad format for URL argument.
+    * entry-not-found - Entry with the specified UUID was not found.
+    * entry-required - Entry UUID argument is required.
+    * forbidden - User does not have access to entry, room or other entity specified in the request.
+    * image-format-not-supported - Unsupported image format.
+    * internal-server-error - Internal error on FriendFeed server.
+    * limit-exceeded - Request limit exceeded.
+    * room-not-found - Room with specified name not found.
+    * room-required - Room name argument is required.
+    * title-required - Entry title argument is required.
+    * unauthorized - The request requires authentication.
+    * user-not-found - User with specified nickname not found.
+    * user-required - User nickname argument is required.
+    * error - Other unspecified error.
+
+These error codes are generated inside Net::FriendFeed wrapper code:
+    * need-auth - The request was not made because it requires authentication.
+    * failed-req - The request was not made because of unknown reason.
+
 =cut
 
 sub new {
@@ -74,6 +101,21 @@ sub new {
     bless $self, $class;
 }
 
+=head2 login([$login])
+
+Read/Write accessor for login name. You can either get current login
+or set it if you'd like to do it after calling C<new()>.
+
+=head2 remotekey([$remotekey])
+
+Read/Write accessor for remotekey. You can either get current remotekey
+or set it if you'd like to do it after calling C<new()>.
+
+Remotekey is a special password valid only for use via API calls.
+A user can get his remotekey here: L<http://friendfeed.com/remotekey>
+
+=cut
+
 sub _connect {
     my $self = shift;
 
@@ -89,6 +131,17 @@ sub _has_auth {
     return $self->login && $self->remotekey;
 }
 
+=head2 validate()
+
+Validates the current combination of login and remotekey.
+
+=cut
+
+sub validate {
+    my $self = shift;
+    $self->_http_req('GET', 'validate', 'need auth');
+}
+
 sub _api_url {
     my $self = shift;
     my $uri = shift;
@@ -100,7 +153,10 @@ sub _http_req {
     my ($self, $method, $uri, $needauth, @args) = @_;
 
     # all posts should be authenticated
-    return if $needauth && !$self->_has_auth;
+    if ($needauth && !$self->_has_auth) {
+        $self->last_error('need-auth');
+        return;
+    }
 
     $self->_connect();
 
@@ -126,8 +182,21 @@ sub _http_req {
         $req->header(Authorization => 'Basic ' . encode_base64($self->login . ':' . $self->remotekey, q{}));
     }
 
-    ($Last_Http_Response = $self->ua->request($req)) && $Last_Http_Response->is_success
-        or return;
+    if ($Last_Http_Response = $self->ua->request($req)) {
+        unless ($Last_Http_Response->is_success) {
+            require JSON;       # should die if absent
+            JSON->VERSION(2.0); # we need newer JSON
+            # do some JSON magic
+            $self->last_error(
+                JSON::from_json($Last_Http_Response->content, { utf8 => 1})->{errorCode}
+            );
+            return;
+        }
+    }
+    else {
+        $self->last_error('failed-req');
+        return;
+    }
 
     if ($needs_parsing) {
         require JSON;       # should die if absent
@@ -152,6 +221,26 @@ sub _post {
     my $uri = shift;
 
     $self->_http_req('POST', $uri, 'need auth', @_);
+}
+
+=head2 list_services
+
+Returns the list of all services supported by FriendFeed.
+
+The returned JSON has the format:
+
+    * services[]
+          o url - the official URL of the service, e.g., http://picasaweb.google.com/
+          o iconUrl - the URL of the favicon for this service
+          o id - the service's FriendFeed ID, e.g., "picasa"
+          o name - the service's official name, e.g., "Picasa Web Albums"
+
+=cut
+
+sub list_services {
+    my $self = shift;
+
+    $self->_fetch_feed('services', @_);
 }
 
 =head1 FEED FUNCTIONS
@@ -374,6 +463,20 @@ sub fetch_home_feed {
         $self->_fetch_feed('feed/home', @_);
 }
 
+=head2 fetch_entry($uuid)
+
+Fetches a single entry by its UUID. Needs authentication to read
+private entries.
+
+=cut
+
+sub fetch_entry {
+    my $self = shift;
+    my $entry_id = shift;
+
+    $self->_fetch_feed('feed/entry/' . uri_escape($entry_id));
+}
+
 =head2 search($query)
 
 Executes a search over the entries in FriendFeed. If the request is
@@ -526,6 +629,96 @@ sub publish_message {
     my $msg = shift;
 
     $self->publish_link($msg);
+}
+
+=head2 delete_entry($entry)
+
+Delete an entry. The arguments are:
+
+=over
+
+=item $entry
+
+required - The FriendFeed UUID of the entry.
+
+=back
+
+=cut
+
+sub delete_entry {
+    my $self = shift;
+    my ($entry) = @_;
+
+    $self->_post('entry/delete', [entry => $entry]);
+}
+
+=head2 undelete_entry($entry)
+
+Undelete a deleted entry. The arguments are:
+
+=over
+
+=item $entry
+
+required - The FriendFeed UUID of the entry.
+
+=back
+
+=cut
+
+sub undelete_entry {
+    my $self = shift;
+    my ($entry) = @_;
+
+    $self->_post('entry/delete', [
+        entry       => $entry,
+        undelete    => 1,
+    ]);
+}
+
+=head2 hide_entry($entry)
+
+Hides an entry for current user. The arguments are:
+
+=over
+
+=item $entry
+
+required - The FriendFeed UUID of the entry.
+
+=back
+
+=cut
+
+sub hide_entry {
+    my $self = shift;
+    my ($entry) = @_;
+
+    $self->_post('entry/hide', [entry => $entry]);
+}
+
+=head2 unhide_entry($entry)
+
+Unhide a hidden entry. The arguments are:
+
+=over
+
+=item $entry
+
+required - The FriendFeed UUID of the entry.
+
+=back
+
+=cut
+
+sub unhide_entry {
+    my $self = shift;
+    my ($entry) = @_;
+
+    $self->_post('entry/hide', [
+        entry       => $entry,
+        unhide    => 1,
+    ]);
 }
 
 =head1 COMMENT AND LIKE FUNCTIONS
