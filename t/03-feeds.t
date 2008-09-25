@@ -3,7 +3,7 @@
 use warnings;
 use strict;
 
-use Test::More qw/no_plan/;
+use Test::More tests => 38;
 use Test::NoWarnings;
 use Test::Deep;
 use Test::MockHTTP;
@@ -32,7 +32,7 @@ is($frf->return_feeds_as(), 'structure', 'default return_feeds_as');
 can_ok($frf, qw/fetch_public_feed fetch_user_feed
 fetch_user_comments_feed fetch_user_likes_feed
 fetch_user_discussion_feed fetch_multi_user_feed fetch_home_feed search
-fetch_room_feed/);
+fetch_room_feed fetch_user_friends_feed/);
 
 my $feed_rv;
 
@@ -94,6 +94,16 @@ http_cmp(sub { $frf->fetch_user_discussion_feed('kkapp') },
         ),
     ]
 ), 'user discussion feed');
+
+ok(
+http_cmp(sub { $frf->fetch_multi_user_feed('kkapp', 'mihun') },
+    [
+        uri => methods(
+            path => re('feed/user$'),
+            ['query_param', 'nickname'], 'kkapp,mihun',
+        ),
+    ]
+), 'multi user feed w/o arrayref');
 
 ok(
 http_cmp(sub { $frf->fetch_multi_user_feed(['kkapp', 'mihun']) },
@@ -161,3 +171,13 @@ http_cmp(sub { $frf->fetch_multi_user_feed(['kka/pp', 'mi&hun']) },
         ),
     ]
 ), 'multi user unsafe data');
+
+ok(
+http_cmp(sub { $frf->fetch_user_friends_feed('kkapp') },
+    [
+        uri => methods(
+            path => re('feed/user/kkapp/friends$'),
+        ),
+    ]
+), 'friends feed');
+
